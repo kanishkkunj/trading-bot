@@ -1,0 +1,107 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: tradecraft-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradecraft}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradecraft}
+      POSTGRES_DB: ${POSTGRES_DB:-tradecraft}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tradecraft} -d ${POSTGRES_DB:-tradecraft}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tradecraft-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tradecraft-backend
+    environment:
+      - TZ=Asia/Kolkata
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://tradecraft:tradecraft@postgres:5432/tradecraft}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+      - ALGORITHM=${ALGORITHM:-HS256}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      - REFRESH_TOKEN_EXPIRE_DAYS=${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - ANGELONE_API_KEY=${ANGELONE_API_KEY}
+      - ANGELONE_CLIENT_ID=${ANGELONE_CLIENT_ID}
+      - ANGELONE_API_SECRET=${ANGELONE_API_SECRET}
+      - ANGELONE_TOTP_SECRET=${ANGELONE_TOTP_SECRET}
+      - ANGELONE_BASE_URL=${ANGELONE_BASE_URL}
+      - ANGELONE_WEBHOOK_SECRET=${ANGELONE_WEBHOOK_SECRET}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tradecraft-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev
+
+  trade-api:
+    build:
+      context: ./project-name]
+      dockerfile: Dockerfile
+    container_name: tradecraft-trade-api
+    environment:
+      - TZ=Asia/Kolkata
+      - PORT=3001
+      - BACKEND_BASE_URL=http://backend:8000
+      - MAX_DAILY_LOSS=${MAX_DAILY_LOSS:-2000}
+      - MAX_CAPITAL_PER_TRADE=${MAX_CAPITAL_PER_TRADE:-30000}
+      - MAX_OPEN_POSITIONS=${MAX_OPEN_POSITIONS:-3}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-75}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME}
+      - PINECONE_NAMESPACE=${PINECONE_NAMESPACE:-trade-lessons}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

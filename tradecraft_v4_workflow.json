@@ -1,0 +1,407 @@
+{
+  "name": "Tradecraft v4 Workflow (OpenRouter + TS Backend)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "15,30,45 9 * * 1-5" },
+            { "field": "cronExpression", "expression": "*/15 10-14 * * 1-5" },
+            { "field": "cronExpression", "expression": "0,15,30 15 * * 1-5" }
+          ]
+        },
+        "timezone": "Asia/Kolkata"
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "10 15 * * 1-5" }
+          ]
+        },
+        "timezone": "Asia/Kolkata"
+      },
+      "name": "Square Off Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 520]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3100/api/square-off",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "options": { "timeout": 15000 }
+      },
+      "name": "Auto Square Off",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 520],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "=🔴 *Auto Square-Off Executed*\n\nAll open positions have been closed at 3:10 PM IST.\nTime: {{$now.toISO()}}\nStatus: {{$json.status || 'Done'}}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "name": "Telegram Square Off Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [700, 520]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://host.docker.internal:8000/api/v1/market/quote/NIFTY",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [] },
+        "options": { "timeout": 10000 }
+      },
+      "name": "Get Market Quote",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [460, 300],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://host.docker.internal:8000/api/v1/market/historical/NIFTY?timeframe=15m&days=5",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [] },
+        "options": { "timeout": 10000 }
+      },
+      "name": "Get Historical Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [700, 300],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// ── Inputs ──────────────────────────────────────────────\nconst quote   = $node[\"Get Market Quote\"].json;\nconst history = $node[\"Get Historical Data\"].json;\nconst candles = history.candles || [];\n\nif (candles.length < 30) {\n  throw new Error(\"Not enough candle data: \" + candles.length + \" candles received\");\n}\n\n// ── RSI (14) — Wilder method ─────────────────────────────\nconst last15 = candles.slice(-15);\nlet gains = 0, losses = 0;\nfor (let i = 1; i < last15.length; i++) {\n  const diff = last15[i].close - last15[i - 1].close;\n  if (diff > 0) gains += diff;\n  else losses += Math.abs(diff);\n}\nconst avgGain = gains / 14;\nconst avgLoss = losses / 14;\nconst rs  = avgLoss === 0 ? 100 : avgGain / avgLoss;\nconst rsi = Math.round(100 - (100 / (1 + rs)));\n\n// ── EMA helper ───────────────────────────────────────────\nfunction calcEMA(prices, period) {\n  const k = 2 / (period + 1);\n  let ema = prices[0];\n  for (let i = 1; i < prices.length; i++) {\n    ema = prices[i] * k + ema * (1 - k);\n  }\n  return Math.round(ema * 100) / 100;\n}\nconst closes = candles.map(c => c.close);\nconst ema9  = calcEMA(closes.slice(-20), 9);\nconst ema21 = calcEMA(closes.slice(-30), 21);\n\n// ── MACD (12, 26, 9) ─────────────────────────────────────\nconst ema12 = calcEMA(closes.slice(-30), 12);\nconst ema26 = calcEMA(closes.slice(-30), 26);\nconst macdLine      = Math.round((ema12 - ema26) * 100) / 100;\n// Signal: EMA9 of last 9 MACD values (approximated)\nconst macdValues = [];\nfor (let i = closes.length - 9; i < closes.length; i++) {\n  const e12 = calcEMA(closes.slice(0, i + 1).slice(-30), 12);\n  const e26 = calcEMA(closes.slice(0, i + 1).slice(-30), 26);\n  macdValues.push(e12 - e26);\n}\nconst macdSignal    = Math.round(calcEMA(macdValues, 9) * 100) / 100;\nconst macdHistogram = Math.round((macdLine - macdSignal) * 100) / 100;\n\n// ── MA20 & Volume ─────────────────────────────────────────\nconst last20  = closes.slice(-20);\nconst ma20    = Math.round(last20.reduce((a, b) => a + b, 0) / last20.length);\nconst volumes = candles.slice(-10).map(c => c.volume);\nconst avgVol  = volumes.reduce((a, b) => a + b, 0) / volumes.length;\nconst lastVol = candles[candles.length - 1].volume;\nconst volRatio = avgVol > 0 ? parseFloat((lastVol / avgVol).toFixed(2)) : 1;\n\n// ── Last 20 candles for Claude ────────────────────────────\nconst last20Candles = candles.slice(-20).map(c => ({\n  timestamp: c.timestamp,\n  open:  c.open,\n  high:  c.high,\n  low:   c.low,\n  close: c.close,\n  volume: c.volume\n}));\n\n// ── Current IST time ─────────────────────────────────────\nconst nowIST = new Date().toLocaleString(\"en-IN\", { timeZone: \"Asia/Kolkata\" });\n\n// ── Final payload ─────────────────────────────────────────\nreturn {\n  json: {\n    symbol: \"NIFTY\",\n    timeframe: \"15m\",\n    timestamp: nowIST,\n    livePrice: quote.last_price,\n    candles: last20Candles,\n    indicators: {\n      rsi,\n      ema9,\n      ema21,\n      ma20,\n      macd: {\n        line:      macdLine,\n        signal:    macdSignal,\n        histogram: macdHistogram\n      },\n      volume_ratio: volRatio,\n      trend: quote.last_price > ema21 ? \"BULLISH\" : \"BEARISH\"\n    }\n  }\n};"
+      },
+      "name": "Build Claude Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization",   "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type",    "value": "application/json" },
+            { "name": "HTTP-Referer",    "value": "http://localhost:8000" },
+            { "name": "X-Title",         "value": "Tradecraft Bot" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an intraday trading decision AI for Indian NSE stocks. You will receive a JSON object containing: symbol, 20 OHLCV candles (15-min timeframe), technical indicators (RSI-14, EMA9, EMA21, MACD line/signal/histogram, MA20, volume_ratio, trend), current live price, and current IST timestamp.\\n\\nRules you MUST follow:\\n1. ONLY respond with a single valid JSON object. No explanation, no markdown, no extra text.\\n2. If the current time is after 14:45 IST, always return action: HOLD.\\n3. Never recommend a trade where stop_loss risk exceeds 1.5% of entry_price.\\n4. If you are uncertain or data is insufficient, return action: HOLD.\\n5. confidence must be a number from 1 to 10.\\n6. risk_flag must be one of: NONE, LOW, MEDIUM, HIGH.\\n\\nYou must respond ONLY in this exact JSON format with no extra text:\\n{\\n  \\\"approved\\\": true,\\n  \\\"action\\\": \\\"BUY\\\",\\n  \\\"symbol\\\": \\\"NIFTY\\\",\\n  \\\"entry_price\\\": 22500.00,\\n  \\\"target_price\\\": 22600.00,\\n  \\\"stop_loss\\\": 22450.00,\\n  \\\"quantity\\\": 1,\\n  \\\"confidence\\\": 8,\\n  \\\"risk_flag\\\": \\\"LOW\\\",\\n  \\\"reasoning\\\": \\\"RSI oversold, price above EMA21, MACD crossover detected.\\\"\\n}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify(\"Analyze this market data and give me a trading decision: \" + JSON.stringify($node[\"Build Claude Payload\"].json)) }}\n    }\n  ]\n}",
+        "options": { "timeout": 25000 }
+      },
+      "name": "Claude Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 300],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude's response from OpenRouter (OpenAI-compatible format)\nconst choices = $input.item.json.choices;\nif (!choices || !Array.isArray(choices) || choices.length === 0) {\n  throw new Error(\"OpenRouter returned no choices: \" + JSON.stringify($input.item.json));\n}\nconst raw = choices[0]?.message?.content || \"\";\nif (!raw) {\n  throw new Error(\"Claude message content is empty\");\n}\n// Strip markdown fences if Claude wraps response anyway\nconst cleaned = raw.replace(/```json|```/g, \"\").trim();\n// Extract JSON object\nconst match = cleaned.match(/\\{[\\s\\S]*\\}/);\nif (!match) {\n  throw new Error(\"Claude did not return valid JSON. Raw: \" + raw);\n}\nlet parsed;\ntry {\n  parsed = JSON.parse(match[0]);\n} catch(e) {\n  throw new Error(\"JSON parse failed: \" + e.message + \" | Raw: \" + match[0]);\n}\n// Validate required fields\nconst required = [\"approved\", \"action\", \"confidence\", \"risk_flag\", \"reasoning\"];\nfor (const field of required) {\n  if (parsed[field] === undefined) {\n    throw new Error(\"Claude response missing field: \" + field);\n  }\n}\nreturn { json: parsed };"
+      },
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": true,
+              "operator": "equals"
+            },
+            {
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "HOLD",
+              "operator": "notEquals",
+              "caseSensitive": true
+            },
+            {
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 7,
+              "operator": "gte"
+            }
+          ],
+          "combinator": "and"
+        },
+        "typeConversionEnabled": true
+      },
+      "name": "AI Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1680, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://host.docker.internal:8000/api/v1/risk/status",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [] },
+        "options": { "timeout": 10000 }
+      },
+      "name": "Risk Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1920, 160],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.kill_switch_active }}",
+              "rightValue": false,
+              "operator": "equals"
+            },
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "healthy",
+              "operator": "equals",
+              "caseSensitive": true
+            }
+          ],
+          "combinator": "and"
+        },
+        "typeConversionEnabled": true
+      },
+      "name": "Risk Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2140, 160]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/signals",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"symbol\":        \"NIFTY\",\n  \"action\":        \"{{ $node[\"Parse Claude Response\"].json.action }}\",\n  \"confidence\":    {{ $node[\"Parse Claude Response\"].json.confidence / 10 }},\n  \"suggested_price\": {{ $node[\"Parse Claude Response\"].json.entry_price }},\n  \"suggested_quantity\": {{ $node[\"Parse Claude Response\"].json.quantity }},\n  \"model_version\": \"claude-sonnet-v3\"\n}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Create Signal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2380, 80],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/paper/run?top_k=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": false,
+        "options": { "timeout": 30000 }
+      },
+      "name": "Run Paper Trader",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2600, 80],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3100/api/decisions/log",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"symbol\":        \"NIFTY\",\n  \"action\":        \"{{ $node[\"Parse Claude Response\"].json.action }}\",\n  \"confidence\":    {{ $node[\"Parse Claude Response\"].json.confidence }},\n  \"entry_price\":   {{ $node[\"Parse Claude Response\"].json.entry_price }},\n  \"target_price\":  {{ $node[\"Parse Claude Response\"].json.target_price }},\n  \"stop_loss\":     {{ $node[\"Parse Claude Response\"].json.stop_loss }},\n  \"quantity\":      {{ $node[\"Parse Claude Response\"].json.quantity }},\n  \"risk_flag\":     \"{{ $node[\"Parse Claude Response\"].json.risk_flag }}\",\n  \"reasoning\":     \"{{ $node[\"Parse Claude Response\"].json.reasoning }}\",\n  \"executed\":      true,\n  \"timestamp\":     \"{{ $node[\"Build Claude Payload\"].json.timestamp }}\"\n}",
+        "options": { "timeout": 10000 }
+      },
+      "name": "Log Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2820, 80],
+      "onError": "continueErrorOutput"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const g   = $node[\"Parse Claude Response\"].json;\nconst ind = $node[\"Build Claude Payload\"].json;\nconst emoji     = g.action === \"BUY\" ? \"📈\" : \"📉\";\nconst riskEmoji = { \"NONE\": \"✅\", \"LOW\": \"🟡\", \"MEDIUM\": \"🟠\", \"HIGH\": \"🔴\" }[g.risk_flag] || \"⚪\";\nconst time = new Date().toLocaleString(\"en-IN\", { timeZone: \"Asia/Kolkata\" });\nreturn {\n  json: {\n    message:\n      emoji + \" *Paper Trade Signal*\\n\\n\" +\n      \"Stock: \" + ind.symbol + \"\\n\" +\n      \"Decision: *\" + g.action + \"*\\n\" +\n      \"Entry: ₹\" + g.entry_price + \"\\n\" +\n      \"Target: ₹\" + g.target_price + \"\\n\" +\n      \"Stop Loss: ₹\" + g.stop_loss + \"\\n\" +\n      \"Qty: \" + g.quantity + \"\\n\" +\n      \"RSI: \" + ind.indicators.rsi + \"\\n\" +\n      \"EMA9/21: \" + ind.indicators.ema9 + \" / \" + ind.indicators.ema21 + \"\\n\" +\n      \"MACD: \" + ind.indicators.macd.line + \" | Signal: \" + ind.indicators.macd.signal + \"\\n\" +\n      \"Trend: \" + ind.indicators.trend + \"\\n\" +\n      \"Confidence: \" + g.confidence + \"/10\\n\" +\n      \"Risk: \" + riskEmoji + \" \" + g.risk_flag + \"\\n\" +\n      \"Reason: \" + g.reasoning + \"\\n\" +\n      \"Time: \" + time\n  }\n};"
+      },
+      "name": "Format Trade Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3040, 80]
+    },
+
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "name": "Telegram Trade Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [3260, 80]
+    },
+
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "=⏸ *HOLD — No Trade Taken*\n\nStock: NIFTY\nReason: {{ $node[\"Parse Claude Response\"].json.reasoning }}\nConfidence: {{ $node[\"Parse Claude Response\"].json.confidence }}/10\nRisk Flag: {{ $node[\"Parse Claude Response\"].json.risk_flag }}\nTime: {{ $now.toISO() }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "name": "Telegram HOLD Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1920, 440]
+    },
+
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "=🚫 *Trade Blocked by Risk Manager*\n\nStock: NIFTY\nAction: {{ $node[\"Parse Claude Response\"].json.action }}\nReason: {{ $json.rejection_reason || 'Daily loss limit or position limit reached' }}\nTime: {{ $now.toISO() }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "name": "Telegram Risk Block Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [2380, 280]
+    },
+
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "=🚨 *Workflow Error*\n\nTradecraft bot encountered an error.\nCheck n8n logs immediately.\nTime: {{ $now.toISO() }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "name": "Error Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1440, 520]
+    }
+  ],
+
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Get Market Quote", "type": "main", "index": 0 }]]
+    },
+
+    "Square Off Trigger": {
+      "main": [[{ "node": "Auto Square Off", "type": "main", "index": 0 }]]
+    },
+
+    "Auto Square Off": {
+      "main": [[{ "node": "Telegram Square Off Alert", "type": "main", "index": 0 }]]
+    },
+
+    "Get Market Quote": {
+      "main":  [[{ "node": "Get Historical Data",  "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",           "type": "main", "index": 0 }]]
+    },
+
+    "Get Historical Data": {
+      "main":  [[{ "node": "Build Claude Payload", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",          "type": "main", "index": 0 }]]
+    },
+
+    "Build Claude Payload": {
+      "main":  [[{ "node": "Claude Decision", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",     "type": "main", "index": 0 }]]
+    },
+
+    "Claude Decision": {
+      "main":  [[{ "node": "Parse Claude Response", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",           "type": "main", "index": 0 }]]
+    },
+
+    "Parse Claude Response": {
+      "main":  [[{ "node": "AI Approved?", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",  "type": "main", "index": 0 }]]
+    },
+
+    "AI Approved?": {
+      "main": [
+        [{ "node": "Risk Check",          "type": "main", "index": 0 }],
+        [{ "node": "Telegram HOLD Alert", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Risk Check": {
+      "main":  [[{ "node": "Risk Approved?", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",    "type": "main", "index": 0 }]]
+    },
+
+    "Risk Approved?": {
+      "main": [
+        [{ "node": "Create Signal",              "type": "main", "index": 0 }],
+        [{ "node": "Telegram Risk Block Alert",  "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Create Signal": {
+      "main":  [[{ "node": "Run Paper Trader", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",      "type": "main", "index": 0 }]]
+    },
+
+    "Run Paper Trader": {
+      "main":  [[{ "node": "Log Decision", "type": "main", "index": 0 }]],
+      "error": [[{ "node": "Error Alert",  "type": "main", "index": 0 }]]
+    },
+
+    "Log Decision": {
+      "main": [[{ "node": "Format Trade Message", "type": "main", "index": 0 }]]
+    },
+
+    "Format Trade Message": {
+      "main": [[{ "node": "Telegram Trade Alert", "type": "main", "index": 0 }]]
+    }
+  }
+}

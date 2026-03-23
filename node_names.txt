@@ -1,0 +1,30 @@
+Schedule Trigger
+Square Off Trigger
+Nightly Consolidation Trigger
+Auto Square Off
+Telegram Square Off Alert
+Run Nightly Consolidation
+Telegram Nightly Summary
+Get Market Quote
+Get Historical Data
+Check Drawdown
+Drawdown Breached?
+Telegram Drawdown Alert
+Build Claude Payload
+Run Research
+Merge
+Combine Data
+Claude Decision
+Parse Claude Response
+AI Approved?
+Risk Check
+Risk Approved?
+Create Signal
+Run Paper Trader
+Log Trade to DB
+Log Decision
+Format Trade Message
+Telegram Trade Alert
+Telegram HOLD Alert
+Telegram Risk Block Alert
+Error Alert

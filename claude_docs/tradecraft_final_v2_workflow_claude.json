@@ -1,0 +1,40 @@
+{
+  "name": "Tradecraft Final Workflow (Claude)",
+  "nodes": [
+    // ...existing nodes...
+    {
+      "parameters": {
+        "jsCode": "const quote = $node[\"Get Market Quote\"].json;\nconst history = $node[\"Get Historical Data\"].json;\nconst candles = history.candles || [];\nconst indicators = {\n  rsi: /* your RSI calculation */,\n  ma20: /* your MA20 calculation */,\n  volume_ratio: /* your volume ratio calculation */,\n  trend: /* your trend calculation */\n};\nreturn { json: { symbol: \"NIFTY\", timeframe: \"15m\", candles, quote, indicators } };",
+        "name": "Build Claude Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1200, 300]
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "YOUR_CLAUDE_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"model\": \"claude-3-opus-20240229\", \"max_tokens\": 512, \"messages\": [{ \"role\": \"user\", \"content\": \"You are an expert trading decision AI for Indian NSE stocks. Given the following market data (in JSON): {{$node[\"Build Claude Payload\"].json}} Respond ONLY in this exact JSON format: {\\n  \\\"approved\\\": true,\\n  \\\"final_decision\\\": \\\"BUY\\\",\\n  \\\"confidence\\\": 8,\\n  \\\"reasoning\\\": \\\"RSI oversold at 28 with price above MA20.\\\",\\n  \\\"risk_flag\\\": \\\"LOW\\\"\\n} \"}] }",
+        "options": { "timeout": 20000 }
+      },
+      "name": "Claude Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1400, 300]
+    },
+    // ...rest of workflow nodes (parsing, trade execution, alerts)...
+  ],
+  "connections": {
+    // ...update connections to use Build Claude Payload and Claude Decision nodes...
+  }
+}

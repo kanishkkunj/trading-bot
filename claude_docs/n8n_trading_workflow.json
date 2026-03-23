@@ -1,0 +1,178 @@
+{
+  "name": "Tradecraft Automated Trading Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "custom",
+              "cron": "0 15,30,45 9-15 * * 1-5"
+            }
+          ]
+        }
+      },
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/api/signals/",
+        "headers": {
+          "item": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "body": {
+          "symbol": "NIFTY",
+          "interval": "15m"
+        }
+      },
+      "name": "Get Signals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/api/strategy/claude_decide",
+        "headers": {
+          "item": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "body": {
+          "features": "={{$json.features}}",
+          "technical_signals": "={{$json.technical_signals}}"
+        }
+      },
+      "name": "Claude Validate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/api/risk/kill-switch",
+        "headers": {
+          "item": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "body": {
+          "trade_decision": "={{$json}}"
+        }
+      },
+      "name": "Risk Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://backend:8000/api/paper/run",
+        "headers": {
+          "item": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "body": {
+          "trade": "={{$json}}"
+        }
+      },
+      "name": "Paper Trade",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "Trade executed: {{$json}}"
+      },
+      "name": "Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1200, 300]
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Get Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Signals": {
+      "main": [
+        [
+          {
+            "node": "Claude Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Validate": {
+      "main": [
+        [
+          {
+            "node": "Risk Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Check": {
+      "main": [
+        [
+          {
+            "node": "Paper Trade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Paper Trade": {
+      "main": [
+        [
+          {
+            "node": "Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

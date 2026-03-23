@@ -1,0 +1,425 @@
+{
+  "name": "Tradecraft Final Workflow",
+  "nodes": [
+        {
+          "parameters": {
+            "method": "GET",
+            "url": "http://host.docker.internal:8000/api/v1/market/historical/NIFTY?timeframe=15m&days=5",
+            "sendHeaders": true,
+            "headerParameters": {
+              "parameters": []
+            },
+            "options": {
+              "timeout": 10000
+            }
+          },
+          "name": "historical_data",
+          "type": "n8n-nodes-base.httpRequest",
+          "typeVersion": 4,
+          "position": [
+            300,
+            400
+          ],
+          "onError": "continueErrorOutput"
+        },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15,30,45 9 * * 1-5"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "*/15 10-14 * * 1-5"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0,15,30 15 * * 1-5"
+            }
+          ]
+        },
+        "timezone": "Asia/Kolkata"
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://host.docker.internal:8000/api/v1/market/quote/NIFTY",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Get Market Quote",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        640,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://host.docker.internal:8000/api/v1/market/historical/NIFTY?timeframe=15m&days=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Get Historical Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        860,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const quote = $node[\"Get Market Quote\"].json;\nconst history = $node[\"Get Historical Data\"].json;\nconst candles = history.candles || [];\nconst last14 = candles.slice(-14);\nlet gains = 0, losses = 0;\nfor (let i = 1; i < last14.length; i++) {\n  const diff = last14[i].close - last14[i-1].close;\n  if (diff > 0) gains += diff; else losses += Math.abs(diff);\n}\nconst rs = losses === 0 ? 100 : (gains/14) / (losses/14);\nconst rsi = Math.round(100 - (100 / (1 + rs)));\nconst last20 = candles.slice(-20).map(c => c.close);\nconst ma20 = last20.length > 0 ? Math.round(last20.reduce((a,b) => a+b,0) / last20.length) : 0;\nconst volumes = candles.slice(-10).map(c => c.volume);\nconst avgVol = volumes.reduce((a,b) => a+b,0) / volumes.length;\nconst lastVol = candles.length > 0 ? candles[candles.length-1].volume : 0;\nconst volRatio = avgVol > 0 ? (lastVol/avgVol).toFixed(2) : 1;\nreturn { json: { symbol: \"NIFTY\", timeframe: \"15m\", candles, quote, indicators: { rsi, ma20, volume_ratio: volRatio, trend: quote.last_price > ma20 ? \"BULLISH\" : \"BEARISH\" } } };"
+      },
+      "name": "Build Claude Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_OPENROUTER_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"model\": \"anthropic/claude-sonnet-4.5\", \"max_tokens\": 512, \"messages\": [{ \"role\": \"user\", \"content\": \"You are an expert trading decision AI for Indian NSE stocks. Given the following market data (in JSON): {{$node[\"Build Claude Payload\"].json}} Respond ONLY in this exact JSON format: {\\n  \\\"approved\\\": true,\\n  \\\"final_decision\\\": \\\"BUY\\\",\\n  \\\"confidence\\\": 8,\\n  \\\"reasoning\\\": \\\"RSI oversold at 28 with price above MA20.\\\",\\n  \\\"risk_flag\\\": \\\"LOW\\\"\\n} \"}] }",
+        "options": { "timeout": 20000 }
+      },
+      "name": "Claude Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.text || $input.item.json.content || $input.item.json.output || JSON.stringify($input.item.json);\nconst match = raw.match(/\\{[\\s\\S]*\\}/);\nif (!match) throw new Error(\"Gemini did not return valid JSON: \" + raw);\nreturn { json: JSON.parse(match[0]) };"
+      },
+      "name": "Parse Gemini Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.final_decision }}",
+              "rightValue": "HOLD",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "AI Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/signals/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"symbol\": \"NIFTY\", \"action\": \"{{$node[\\\"Parse Gemini Response\\\"].json.final_decision}}\", \"confidence\": {{$node[\"Parse Gemini Response\"].json.confidence / 10}}, \"model_version\": \"gemini-v1\", \"suggested_price\": {{$node[\"Calculate Indicators\"].json.price}} }",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Create Signal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1960,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/v1/paper/run?top_k=5",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": []
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Run Paper Trader",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2180,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const g = $node[\"Parse Gemini Response\"].json;\nconst ind = $node[\"Calculate Indicators\"].json;\nconst emoji = g.final_decision === \"BUY\" ? \"\\u{1F4C8}\" : \"\\u{1F4C9}\";\nconst riskEmoji = {\"NONE\":\"\\u2705\",\"LOW\":\"\\U0001F7E1\",\"MEDIUM\":\"\\U0001F7E0\",\"HIGH\":\"\\U0001F534\"}[g.risk_flag] || \"\\u26AA\";\nconst time = new Date().toLocaleString(\"en-IN\", {timeZone: \"Asia/Kolkata\"});\nreturn { json: { message: emoji + \" *Paper Trade Signal*\\n\\nStock: \" + ind.symbol + \"\\nDecision: *\" + g.final_decision + \"*\\nPrice: Rs\" + ind.price + \"\\nRSI: \" + ind.rsi + \"\\nTrend: \" + ind.trend + \"\\nAI Confidence: \" + g.confidence + \"/10\\nRisk: \" + g.risk_flag + \"\\nReason: \" + g.reasoning + \"\\nTime: \" + time } };"
+      },
+      "name": "Format Trade Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "Telegram Trade Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2620,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "=\u23f8 *HOLD - No Trade Taken*\n\nStock: NIFTY\nReason: {{$node[\"Parse Gemini Response\"].json.reasoning}}\nConfidence: {{$node[\"Parse Gemini Response\"].json.confidence}}/10",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "Telegram HOLD Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1960,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "5700806464",
+        "text": "=\ud83d\udea8 *Workflow Error*\n\nTradecraft bot encountered an error.\nCheck n8n logs immediately.\nTime: {{$now.toISO()}}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "Error Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "historical_data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "historical_data": {
+      "main": [
+        [
+          {
+            "node": "Get Market Quote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Market Quote": {
+      "main": [
+        [
+          {
+            "node": "Get Historical Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Historical Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate Indicators",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Payload": {
+      "main": [
+        [
+          {
+            "node": "Claude Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Decision": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Response": {
+      "main": [
+        [
+          {
+            "node": "Create Signal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Signal": {
+      "main": [
+        [
+          {
+            "node": "Run Paper Trader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Paper Trader": {
+      "main": [
+        [
+          {
+            "node": "Format Trade Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Trade Message": {
+      "main": [
+        [
+          {
+            "node": "Telegram Trade Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
