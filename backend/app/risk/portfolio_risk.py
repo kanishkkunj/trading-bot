@@ -77,3 +77,44 @@ class PortfolioRisk:
             "india_demonetization": -0.04,
         }
         return self.stress_scenarios(returns, shocks)
+
+    def check_concentration(
+        self,
+        position_weights: Dict[str, float],
+        max_single_weight: float = 0.20,
+        max_sector_weight: float = 0.40,
+        sector_map: Optional[Dict[str, str]] = None,
+    ) -> "ConcentrationResult":
+        """Return a ConcentrationResult flagging any position or sector limit breach.
+
+        Args:
+            position_weights:  {symbol: weight_as_fraction_of_portfolio}
+            max_single_weight: Hard cap per single position (default 20%)
+            max_sector_weight: Hard cap per sector bucket (default 40%)
+            sector_map:        Optional {symbol: sector} mapping for grouping
+        """
+        breaches: List[str] = []
+
+        for sym, w in position_weights.items():
+            if w > max_single_weight:
+                breaches.append(f"{sym} weight {w:.1%} > single limit {max_single_weight:.1%}")
+
+        if sector_map:
+            sector_totals: Dict[str, float] = {}
+            for sym, w in position_weights.items():
+                sector = sector_map.get(sym, "unknown")
+                sector_totals[sector] = sector_totals.get(sector, 0.0) + w
+            for sector, total in sector_totals.items():
+                if total > max_sector_weight:
+                    breaches.append(f"sector '{sector}' weight {total:.1%} > limit {max_sector_weight:.1%}")
+
+        if breaches:
+            log.warning("portfolio_concentration_breach", breaches=breaches)
+            return ConcentrationResult(allowed=False, breaches=breaches)
+        return ConcentrationResult(allowed=True, breaches=[])
+
+
+@dataclass
+class ConcentrationResult:
+    allowed: bool
+    breaches: List[str]

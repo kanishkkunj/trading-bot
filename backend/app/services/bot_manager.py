@@ -41,6 +41,10 @@ class BotManager:
             "total_cycles": 0,
             "total_orders": 0,
             "errors": 0,
+            # Phase 0 baseline counters — incremented by risk gates and freshness checks
+            "stale_data_blocks": 0,
+            "close_window_blocks": 0,
+            "model_validation_blocks": 0,
         }
 
     # ------------------------------------------------------------------ internal
@@ -137,6 +141,23 @@ class BotManager:
             "stopped_at": self._stopped_at.isoformat() if self._stopped_at else None,
             "config": self._config,
         }
+
+    # ------------------------------------------------------------------ counters
+
+    def record_stale_data_block(self) -> None:
+        """Increment stale-data block counter (called by freshness gate)."""
+        self._stats["stale_data_blocks"] += 1
+        log.debug("bot_stat_stale_data_block", total=self._stats["stale_data_blocks"])
+
+    def record_close_window_block(self) -> None:
+        """Increment close-window block counter (called by market-close guard)."""
+        self._stats["close_window_blocks"] += 1
+        log.debug("bot_stat_close_window_block", total=self._stats["close_window_blocks"])
+
+    def record_model_validation_block(self) -> None:
+        """Increment model-validation block counter (called by walk-forward gate)."""
+        self._stats["model_validation_blocks"] += 1
+        log.debug("bot_stat_model_validation_block", total=self._stats["model_validation_blocks"])
 
     def get_statistics(self) -> Dict[str, Any]:
         """Return accumulated performance counters."""

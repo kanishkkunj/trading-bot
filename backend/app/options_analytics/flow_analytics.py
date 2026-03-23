@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -20,6 +20,32 @@ class FlowMetrics:
     iv_rank: float
     iv_percentile: float
     bullish_flow_ratio: float
+
+
+@dataclass
+class OIFeatures:
+    """Open-interest derived features for a single underlying snapshot.
+
+    Inspired by the NSE option-chain boundary/pressure methodology from Repo 1,
+    but implemented independently using only our own data structures.
+    """
+
+    # Strike carrying the highest cumulative call OI (acts as near-term resistance)
+    call_wall_strike: float
+    # Strike carrying the highest cumulative put OI (acts as near-term support)
+    put_wall_strike: float
+    # Total call OI within ATM neighbourhood (defined by atm_pct radius)
+    atm_call_oi: float
+    # Total put OI within ATM neighbourhood
+    atm_put_oi: float
+    # put / call OI ratio in the ATM zone (>1 → put-heavy / bearish pressure)
+    oi_pressure_ratio: float
+    # OI-weighted directional bias [-1 (bearish) .. +1 (bullish)]
+    oi_weighted_bias: float
+    # Distance of spot from call wall as fraction of spot (positive = below wall)
+    call_wall_distance: float
+    # Distance of spot from put wall as fraction of spot (positive = above wall)
+    put_wall_distance: float
 
 
 class FlowAnalytics:
@@ -67,6 +93,86 @@ class FlowAnalytics:
         iv_rank = (iv - hist.min()) / (hist.max() - hist.min() + 1e-6)
         iv_percentile = float((hist < iv).mean())
         return float(iv_rank), iv_percentile
+
+    # ---------------------------------------------------------------------- OI features
+
+    def oi_boundary_strikes(
+        self,
+        calls: List[Dict],
+        puts: List[Dict],
+    ) -> Tuple[float, float]:
+        """Find the call wall (max call OI) and put wall (max put OI) strikes.
+
+        These strikes act as near-term resistance and support boundaries
+        respectively — large option writers tend to defend them.
+
+        Returns (call_wall_strike, put_wall_strike).  Returns (0.0, 0.0) when
+        the chain is empty (e.g. outside market hours).
+        """
+        if not calls and not puts:
+            return 0.0, 0.0
+
+        call_wall = max(calls, key=lambda r: float(r.get("openInterest") or 0), default=None)
+        put_wall = max(puts, key=lambda r: float(r.get("openInterest") or 0), default=None)
+        return (
+            float(call_wall.get("strike", 0.0)) if call_wall else 0.0,
+            float(put_wall.get("strike", 0.0)) if put_wall else 0.0,
+        )
+
+    def oi_features(
+        self,
+        calls: List[Dict],
+        puts: List[Dict],
+        spot: float,
+        atm_pct: float = 0.02,
+    ) -> Optional[OIFeatures]:
+        """Compute OI boundary + pressure features for a single expiry slice.
+
+        Args:
+            calls:    List of call option records from yfinance option_chain.
+            puts:     List of put option records.
+            spot:     Current underlying price.
+            atm_pct:  Radius around spot (as fraction) for ATM neighbourhood.
+
+        Returns None when the chain is too sparse to compute meaningful features.
+        """
+        if not calls or not puts or spot <= 0:
+            return None
+
+        call_wall_strike, put_wall_strike = self.oi_boundary_strikes(calls, puts)
+
+        low = spot * (1.0 - atm_pct)
+        high = spot * (1.0 + atm_pct)
+        atm_call_oi = sum(
+            float(r.get("openInterest") or 0)
+            for r in calls
+            if low <= float(r.get("strike", 0.0)) <= high
+        )
+        atm_put_oi = sum(
+            float(r.get("openInterest") or 0)
+            for r in puts
+            if low <= float(r.get("strike", 0.0)) <= high
+        )
+
+        oi_pressure_ratio = atm_put_oi / (atm_call_oi + 1.0)
+
+        # Weighted bias: +1 when calls dominate, -1 when puts dominate
+        total_atm_oi = atm_call_oi + atm_put_oi + 1e-6
+        oi_weighted_bias = (atm_call_oi - atm_put_oi) / total_atm_oi
+
+        call_wall_distance = (call_wall_strike - spot) / spot if call_wall_strike > 0 else 0.0
+        put_wall_distance = (spot - put_wall_strike) / spot if put_wall_strike > 0 else 0.0
+
+        return OIFeatures(
+            call_wall_strike=call_wall_strike,
+            put_wall_strike=put_wall_strike,
+            atm_call_oi=atm_call_oi,
+            atm_put_oi=atm_put_oi,
+            oi_pressure_ratio=oi_pressure_ratio,
+            oi_weighted_bias=oi_weighted_bias,
+            call_wall_distance=call_wall_distance,
+            put_wall_distance=put_wall_distance,
+        )
 
     def summarize_flow(
         self,

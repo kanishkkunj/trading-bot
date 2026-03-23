@@ -13,6 +13,8 @@ class MarketScheduler:
     # Indian market hours (IST)
     MARKET_OPEN = time(9, 15)
     MARKET_CLOSE = time(15, 30)
+    # No new directional entry orders after this time (15 min before close)
+    ENTRY_CUTOFF = time(15, 15)
 
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
@@ -83,3 +85,13 @@ class MarketScheduler:
         # Check market hours
         current_time = now.time()
         return self.MARKET_OPEN <= current_time <= self.MARKET_CLOSE
+
+    def is_within_entry_window(self) -> bool:
+        """Return True only when new directional entries are safe.
+
+        Entries are blocked from ENTRY_CUTOFF (15:15) to market close so that
+        the bot is never caught opening fresh positions minutes before session end.
+        """
+        if not self.is_market_open():
+            return False
+        return datetime.now().time() < self.ENTRY_CUTOFF

@@ -59,3 +59,57 @@ async def toggle_kill_switch(
         "message": "Kill switch coming in Sprint 3",
         "requested_state": active,
     }
+
+
+@router.get("/gate-diagnostics")
+async def get_gate_diagnostics() -> dict:
+    """Return current state of all pre-trade gate checks and feature flags.
+
+    This endpoint is intended for monitoring dashboards and n8n observability
+    nodes.  It shows which gates are active and what their current settings are
+    so that blocked decisions can be diagnosed without log scraping.
+    """
+    from app.core.feature_flags import (
+        ingestion_hardening_enabled,
+        options_signals_enabled,
+        strict_freshness_enabled,
+        walk_forward_gate_enabled,
+    )
+    from app.risk.pre_trade_checks import _DEFAULT_DATA_MAX_AGE_SECONDS, _ENTRY_CUTOFF
+    from app.risk.tail_risk import TAIL_RISK_BLOCK_THRESHOLD
+
+    return {
+        "feature_flags": {
+            "ingestion_hardening": ingestion_hardening_enabled(),
+            "options_signals": options_signals_enabled(),
+            "walk_forward_gate": walk_forward_gate_enabled(),
+            "strict_freshness": strict_freshness_enabled(),
+        },
+        "gates": {
+            "stale_data_max_age_seconds": _DEFAULT_DATA_MAX_AGE_SECONDS,
+            "stale_data_hard_block_when": "FEATURE_STRICT_FRESHNESS=true",
+            "entry_cutoff_time": str(_ENTRY_CUTOFF),
+            "tail_risk_block_threshold": TAIL_RISK_BLOCK_THRESHOLD,
+            "walk_forward_required_when": "FEATURE_WALK_FORWARD_GATE=true",
+        },
+    }
+
+
+@router.get("/bot-counters")
+async def get_bot_counters() -> dict:
+    """Return accumulated gate-block counters from the bot manager.
+
+    Useful for observing how many cycles were blocked by freshness, close-window,
+    or model-validation gates since the last restart.
+    """
+    from app.services.bot_manager import bot_manager
+
+    stats = bot_manager.get_statistics()
+    return {
+        "total_cycles": stats.get("total_cycles", 0),
+        "total_orders": stats.get("total_orders", 0),
+        "errors": stats.get("errors", 0),
+        "stale_data_blocks": stats.get("stale_data_blocks", 0),
+        "close_window_blocks": stats.get("close_window_blocks", 0),
+        "model_validation_blocks": stats.get("model_validation_blocks", 0),
+    }
