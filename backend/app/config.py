@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # Paper trading defaults
     PAPER_INITIAL_CAPITAL: float = 500.0
 
+    # ------------------------------------------------------------------ Feature flags
+    # Set to True (or export env var as "true") to enable each capability phase.
+    # All flags default to False so the baseline is unchanged until explicitly promoted.
+    FEATURE_INGESTION_HARDENING: bool = False   # Phase 1: retry + staleness detection
+    FEATURE_OPTIONS_SIGNALS: bool = False        # Phase 2/3: OI pressure signals
+    FEATURE_WALK_FORWARD_GATE: bool = False      # Phase 4: walk-forward validation gate
+    FEATURE_STRICT_FRESHNESS: bool = False       # Phase 1: hard reject on stale data
+
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""

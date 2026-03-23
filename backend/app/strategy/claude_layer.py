@@ -12,27 +12,34 @@ class ClaudeDecisionService:
         self.signal_scorer = signal_scorer
         self.claude = claude
 
-    def decide_trade(self, features: dict, technical_signals: dict) -> dict:
+    def decide_trade(self, features: dict, technical_signals: dict, options_context: dict | None = None) -> dict:
         # Get ML prediction and confidence
         X = self._features_to_df(features)
         ml_pred = self.ml_model.predict(X)[0]
         ml_conf = self.ml_model.predict_proba(X)[0][1]
-        # Score signal
+
+        # Score signal — includes options context when available
         signal_ctx = SignalContext(
             model_confidence=ml_conf,
             uncertainty=1-ml_conf,
             liquidity_score=technical_signals.get('liquidity', 1.0),
             recent_accuracy=technical_signals.get('recent_accuracy', 0.5),
             macro_alignment=technical_signals.get('macro', 0.5),
-            features=features
+            features=features,
+            options_context=options_context or {},
         )
         signal_score = self.signal_scorer.score(signal_ctx)
-        # Aggregate for Claude
+
+        # Aggregate for Claude — include OI context when options feature is live
         ml_outputs = {
             'prediction': ml_pred,
             'confidence': ml_conf,
-            'signal_score': signal_score
+            'signal_score': signal_score,
         }
+        from app.core.feature_flags import options_signals_enabled
+        if options_signals_enabled() and options_context:
+            ml_outputs['options_context'] = options_context
+
         # Call Claude for reasoning
         result = self.claude.reason(ml_outputs, technical_signals)
         return result

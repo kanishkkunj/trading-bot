@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from app.options_analytics.flow_analytics import FlowAnalytics, FlowMetrics
+from app.options_analytics.flow_analytics import FlowAnalytics, FlowMetrics, OIFeatures
 
 
 @dataclass
@@ -81,6 +81,77 @@ class OptionsSignals:
         """Return timing bias close to expiry (1 near expiry, 0 otherwise)."""
         days = (expiry - as_of).days
         return float(max(0.0, window_days - abs(days)) / window_days)
+
+    # ------------------------------------------------------------------ OI signals
+
+    def oi_pressure_signal(self, oi_features: OIFeatures) -> float:
+        """Directional signal from OI pressure in the ATM neighbourhood.
+
+        Returns a value in [-1, +1]:
+          +1  — strong call-OI dominance (bullish bias; market makers short calls,
+                supporting near-term upside continuation)
+          -1  — strong put-OI dominance (bearish bias; support wall pressure or
+                bearish hedging activity)
+
+        The signal is gated by options_signals_enabled() so production scoring
+        behaviour is unchanged until the flag is turned on.
+        """
+        from app.core.feature_flags import options_signals_enabled
+
+        if not options_signals_enabled():
+            return 0.0
+
+        return float(np.clip(oi_features.oi_weighted_bias, -1.0, 1.0))
+
+    def boundary_proximity_signal(self, spot: float, oi_features: OIFeatures) -> Tuple[float, float]:
+        """Return (call_proximity, put_proximity) as fractions in [0, 1].
+
+        A value near 1.0 means spot is *close* to the respective wall.
+        This is useful for position-sizing and exit-timing decisions: being
+        near the call wall in a long trade, or near the put wall in a short
+        trade, is a natural profit-taking zone.
+        """
+        from app.core.feature_flags import options_signals_enabled
+
+        if not options_signals_enabled():
+            return 0.0, 0.0
+
+        # Normalise distance: wall 5% away → proximity ~0, wall 0% away → 1.0
+        max_pct = 0.05
+        call_prox = max(0.0, 1.0 - oi_features.call_wall_distance / max_pct) if oi_features.call_wall_strike > 0 else 0.0
+        put_prox = max(0.0, 1.0 - oi_features.put_wall_distance / max_pct) if oi_features.put_wall_strike > 0 else 0.0
+        return float(np.clip(call_prox, 0.0, 1.0)), float(np.clip(put_prox, 0.0, 1.0))
+
+    def options_context_summary(
+        self,
+        oi_features: Optional[OIFeatures],
+        flow: Optional[FlowMetrics],
+    ) -> Dict[str, float]:
+        """Produce a flat feature dict suitable for injection into the Claude payload.
+
+        Only populated when options_signals_enabled(); returns empty dict otherwise
+        so legacy callers receive zero new tokens in their prompts.
+        """
+        from app.core.feature_flags import options_signals_enabled
+
+        if not options_signals_enabled():
+            return {}
+
+        result: Dict[str, float] = {}
+        if oi_features is not None:
+            result["oi_pressure_ratio"] = oi_features.oi_pressure_ratio
+            result["oi_weighted_bias"] = oi_features.oi_weighted_bias
+            result["call_wall_distance_pct"] = oi_features.call_wall_distance * 100
+            result["put_wall_distance_pct"] = oi_features.put_wall_distance * 100
+            result["oi_pressure_signal"] = self.oi_pressure_signal(oi_features)
+            call_prox, put_prox = self.boundary_proximity_signal(0.0, oi_features)
+            result["call_wall_proximity"] = call_prox
+            result["put_wall_proximity"] = put_prox
+        if flow is not None:
+            result["flow_put_call_ratio"] = flow.put_call_ratio
+            result["flow_bullish_ratio"] = flow.bullish_flow_ratio
+            result["flow_iv_rank"] = flow.iv_rank
+        return result
 
 
 class OptionsBacktester:
